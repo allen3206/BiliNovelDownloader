@@ -1,0 +1,27 @@
+# 忽略 Python 快取
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 忽略打包工具產生的資料夾
+build/
+dist/
+*.spec
+*.zip
+BiliNovelDownloader-*/
+
+# 忽略下載的暫存與結果
+downloads/
+temp/
+log/
+*.log
+
+# 忽略核心下載器執行檔 (由使用者自行下載或在 Releases 中提供)
+tools/*.exe
+
+# 忽略作業系統產生的隱藏檔
+.DS_Store
+Thumbs.db
+
+*.png
+note
