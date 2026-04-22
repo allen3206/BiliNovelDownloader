@@ -4,9 +4,9 @@
 
 ## 預覽
 
-<img width="952" height="732" alt="screenshot1" src="https://github.com/user-attachments/assets/b48986c4-c42c-4689-83a1-1a691eb502e6" />
+<img width="952" height="732" alt="screenshot1" src="https://github.com/user-attachments/assets/c3a3ef63-afcd-4b75-9b6d-8dfabae5fba8" />
 
-<img width="952" height="732" alt="screenshot2" src="https://github.com/user-attachments/assets/27321634-633c-4442-a928-fd7f3ea5679d" />
+<img width="952" height="732" alt="screenshot2" src="https://github.com/user-attachments/assets/c985db75-b2d6-4c5f-9705-e09562ec44b9" />
 
 ## 特色與功能
 
