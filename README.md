@@ -1,12 +1,16 @@
-# 嗶哩輕小說自動下載與繁化工具 (BiliNovelDownloaderGUI)
+<p align="center">
+   <img src="./assets/BiliNovelDownloaderIcon.png" width="256" height="256" />
+</p>
 
-基於 [bili_novel_packer](https://github.com/Montaro2017/bili_novel_packer) 核心打造的圖形化介面工具，專為 [嗶哩輕小說](https://tw.linovelib.com/) 而設計。提供小說線上資訊預覽、全自動下載，以及 EPUB 電子書簡繁轉換的解決方案。
+<h1 align="center">嗶哩輕小說自動下載與繁化工具 (BiliNovelDownloaderGUI)</h1>
+
+基於 [bili_novel_packer](https://github.com/Montaro2017/bili_novel_packer) 核心打造的圖形化介面工具，專為 [嗶哩輕小說](https://tw.linovelib.com/) 而設計。支援小說資訊預覽、全自動下載及 EPUB 簡繁轉換。
 
 ## 預覽
 
-<img width="952" height="732" alt="screenshot1" src="https://github.com/user-attachments/assets/c3a3ef63-afcd-4b75-9b6d-8dfabae5fba8" />
+<img width="952" height="732" alt="screenshot1" src="./assets/screenshots1.png" />
 
-<img width="952" height="732" alt="screenshot2" src="https://github.com/user-attachments/assets/c985db75-b2d6-4c5f-9705-e09562ec44b9" />
+<img width="952" height="732" alt="screenshot2" src="./assets/screenshots2.png" />
 
 ## 特色與功能
 
@@ -15,6 +19,8 @@
 *   **即時狀態追蹤**：內建執行日誌與進度提示，及時查看下載資訊、錯誤訊息
 *   **分卷下載**：可選下載**全部範圍**或**指定範圍**（例如：`1, 3-5, 9`）
 *   **進階整合選項**：可選擇「合併選取的分卷為單一檔案」，或是「在每章開頭自動添加章節標題」
+*   **下載歷史紀錄**：自動儲存近期載入過的小說網址，點擊下拉選單即可重新載入
+*   **智慧快取機制**：書籍封面圖片自動快取 24 小時，提升二次載入速度
 
 ## 如何使用
 
@@ -54,7 +60,7 @@
 1. 安裝 Python 3.8 或以上版本
 2. 安裝必要的套件：
    ```bash
-   pip install requests beautifulsoup4 pillow opencc psutil lxml
+   pip install -r requirements.txt
    ```
 
 ### 直接執行腳本

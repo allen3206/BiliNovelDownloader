@@ -1,0 +1,6 @@
+lxml
+pillow
+opencc
+psutil
+requests
+beautifulsoup4

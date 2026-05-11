@@ -3,6 +3,7 @@ import re
 import sys
 import html
 import time
+import json
 import ctypes
 import shutil
 import opencc
@@ -36,29 +37,40 @@ except ImportError:
     HAS_PILLOW_REQUESTS = False
 
 # ================= 全域常數 =================
-APP_VERSION = 'v1.0.0'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 DIR_DOWNLOADS = 'downloads'
 DIR_SIMP = '簡體'
 DIR_TRAD = '繁體'
 
-# 設定全域 OpenCC 實例，避免重複載入字典檔耗費效能
+VALID_URL_PATTERN = re.compile(
+    r'^https?://tw\.linovelib\.com/novel/\d+(?:\.html)?(?:/.*)?$'
+)
+
+# 設定全域 OpenCC 實例，避免重複載入字典檔
 S2TW_CONVERTER = opencc.OpenCC('s2tw')
 
 # ================= 核心工具函式 =================
 
 def get_resource_path(relative_path: str) -> Path:
-    """獲取資源檔案的絕對路徑 (相容 PyInstaller 的 _MEIPASS)"""
+    """獲取資源檔案的絕對路徑"""
     if hasattr(sys, '_MEIPASS'):
         return Path(sys._MEIPASS) / relative_path
     return Path(__file__).resolve().parent / relative_path
 
 def get_base_path() -> Path:
-    """獲取程式執行的根目錄 (相容 PyInstaller 打包後的 .exe)"""
+    """獲取程式執行的根目錄"""
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent
     else:
         return Path(__file__).resolve().parent
+
+def _read_version() -> str:
+    version_file = get_resource_path('version.txt')
+    if version_file.exists():
+        return version_file.read_text(encoding='utf-8').strip()
+    return 'v0.0.0-dev'
+
+APP_VERSION = _read_version()
 
 def sanitize_filename(name: str) -> str:
     """清理檔案/資料夾名稱中的不合法字元"""
@@ -85,9 +97,39 @@ def kill_existing_packer():
     except Exception as e:
         logging.warning(f"清理進程時發生錯誤: {e}")
 
+def classify_error(e: Exception) -> tuple[str, str]:
+    """回傳 (錯誤標題, 使用者友善訊息)"""
+    import requests as req_module
+    
+    if isinstance(e, FileNotFoundError):
+        return ("找不到下載器", 
+                "在 tools 資料夾中找不到 bili_novel_packer 執行檔。\n\n"
+                "請確認 tools 資料夾與主程式在同一層目錄，並且包含下載器 .exe 檔案。")
+    
+    if isinstance(e, req_module.ConnectionError):
+        return ("網路連線失敗",
+                "無法連接至嗶哩輕小說伺服器。\n\n請確認網路連線是否正常。")
+    
+    if isinstance(e, req_module.Timeout):
+        return ("連線逾時",
+                "伺服器回應超時，可能是網路不穩定或伺服器忙碌。\n\n請稍後再試。")
+    
+    msg = str(e)
+    if "404" in msg or "找不到" in msg:
+        return ("小說不存在",
+                "找不到對應的小說頁面。\n\n請確認輸入的網址或 ID 是否正確。")
+    
+    if "未偵測到下載檔案" in msg or "下載失敗" in msg:
+        return ("下載失敗",
+                f"{msg}\n\n請查閱程式目錄下 log 資料夾內的日誌檔案以取得詳細資訊。")
+    
+    return ("發生未預期錯誤", f"錯誤訊息：{msg}\n\n請截圖此訊息並回報給開發者。")
+
 def clear_temp_directory(temp_dir: Path):
     if temp_dir.exists():
         for item in temp_dir.iterdir():
+            if item.name == 'covers':
+                continue
             for i in range(3):
                 try:
                     if item.is_dir():
@@ -126,10 +168,16 @@ def convert_epub_with_opencc(input_epub: Path, output_epub: Path, converter: ope
                 else:
                     zout.writestr(item, content)
 
-def process_downloaded_folder(source_folder_path: Path, base_path: Path):
+def process_downloaded_folder(
+    source_folder_path: Path,
+    base_path: Path,
+    logger: logging.Logger = None
+):
+    if logger is None:
+        logger = logging.getLogger(__name__)
     source_path = Path(source_folder_path)
     if not source_path.exists():
-        logging.error(f"找不到來源資料夾: {source_path}")
+        logger.error(f"找不到來源資料夾: {source_path}")
         return
 
     base_dir = Path(base_path)
@@ -141,7 +189,7 @@ def process_downloaded_folder(source_folder_path: Path, base_path: Path):
     dest_folder_trad.mkdir(parents=True, exist_ok=True)
 
     folder_name = source_path.name
-    logging.info(f"開始處理資料夾: {folder_name}")
+    logger.info(f"開始處理資料夾: {folder_name}")
 
     for file_path in list(source_path.glob('*')):
         if file_path.is_file():
@@ -151,33 +199,40 @@ def process_downloaded_folder(source_folder_path: Path, base_path: Path):
                 new_file_path = file_path.with_name(new_name)
                 if not new_file_path.exists():
                     file_path.rename(new_file_path)
-                    logging.info(f"清理重複檔名: {file_path.name} -> {new_name}")
+                    logger.info(f"清理重複檔名: {file_path.name} -> {new_name}")
 
     target_simp = dest_folder_simp / folder_name
     if target_simp.exists():
-        logging.info(f"簡體備份目標已存在，進行合併: {target_simp}")
+        logger.info(f"簡體備份目標已存在，進行合併: {target_simp}")
         merge_folders(source_path, target_simp)
     else:
         shutil.copytree(source_path, target_simp)
-        logging.info(f"已備份至: {target_simp}")
+        logger.info(f"已備份至: {target_simp}")
 
     epub_files = list(source_path.glob('*.epub'))
     if not epub_files:
-        logging.warning("未在下載資料夾中找到 .epub 檔案。")
+        logger.warning("未在下載資料夾中找到 .epub 檔案。")
 
     for epub_file in epub_files:
-        logging.info(f"正在原生轉換內容: {epub_file.name}")
+        logger.info(f"正在原生轉換內容: {epub_file.name}")
         temp_output = epub_file.with_suffix('.temp.epub')
         
         try:
             convert_epub_with_opencc(epub_file, temp_output, S2TW_CONVERTER)
+
+            # 確認 temp 檔確實存在且有內容，才進行覆蓋
+            if not temp_output.exists() or temp_output.stat().st_size == 0:
+                raise Exception("轉換輸出檔不存在或大小為零，取消覆蓋原檔")
+
             epub_file.unlink()
             temp_output.rename(epub_file)
-            logging.info(f"轉換成功: {epub_file.name}")
+            logger.info(f"轉換成功: {epub_file.name}")
         except Exception as e:
-            logging.error(f"轉換失敗: {epub_file.name}, 錯誤: {e}")
+            logger.error(f"轉換失敗: {epub_file.name}, 錯誤: {e}")
+            # 清理 temp 檔，但原檔不動
             if temp_output.exists():
                 temp_output.unlink()
+                logger.info(f"已清除暫存檔: {temp_output.name}")
 
     for file_path in list(source_path.glob('*')):
         if file_path.is_file():
@@ -186,27 +241,27 @@ def process_downloaded_folder(source_folder_path: Path, base_path: Path):
                 new_path = file_path.with_name(new_name)
                 if not new_path.exists():
                     file_path.rename(new_path)
-                    logging.info(f"檔名已更新: {file_path.name} -> {new_name}")
+                    logger.info(f"檔名已更新: {file_path.name} -> {new_name}")
                 else:
-                    logging.warning(f"無法更名，目標已存在: {new_name}")
+                    logger.warning(f"無法更名，目標已存在: {new_name}")
 
     new_folder_name = sanitize_filename(S2TW_CONVERTER.convert(source_path.name))
     if new_folder_name != source_path.name:
         new_folder_path = source_path.parent / new_folder_name
         source_path.rename(new_folder_path)
         source_path = new_folder_path
-        logging.info(f"資料夾名稱已更新: {folder_name} -> {new_folder_name}")
+        logger.info(f"資料夾名稱已更新: {folder_name} -> {new_folder_name}")
 
     target_trad = dest_folder_trad / source_path.name
     if target_trad.exists():
-        logging.info(f"繁體工作區已存在，進行合併: {target_trad}")
+        logger.info(f"繁體工作區已存在，進行合併: {target_trad}")
         merge_folders(source_path, target_trad)
         shutil.rmtree(source_path)
     else:
         shutil.move(source_path, target_trad)
-        logging.info(f"已移動至工作區: {target_trad}")
+        logger.info(f"已移動至工作區: {target_trad}")
 
-    logging.info("所有程序完成。")
+    logger.info("所有程序完成。")
 
 
 # ================= 爬蟲邏輯 =================
@@ -350,11 +405,38 @@ class NovelScraper:
 
     def download_cover(self, cover_url: str) -> Optional['Image.Image']:
         if not cover_url: return None
-        res = requests.get(cover_url, headers=self.headers, timeout=10)
-        if res.status_code == 200:
-            image = Image.open(io.BytesIO(res.content))
-            image.thumbnail((200, 280))
-            return image
+        import hashlib
+        
+        cache_dir = get_base_path() / 'temp' / 'covers'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        url_hash = hashlib.md5(cover_url.encode('utf-8')).hexdigest()
+        cache_path = cache_dir / f"{url_hash}.jpg"
+        
+        # 檢查快取是否存在且未過期 (24小時)
+        if cache_path.exists():
+            if time.time() - cache_path.stat().st_mtime < 86400:
+                try:
+                    img = Image.open(cache_path).copy()
+                    img.thumbnail((200, 280), Image.LANCZOS)
+                    return img
+                except Exception:
+                    cache_path.unlink(missing_ok=True)
+            else:
+                cache_path.unlink(missing_ok=True)
+                
+        # 快取未命中或已過期：下載並存入快取
+        try:
+            res = requests.get(cover_url, headers=self.headers, timeout=15)
+            if res.status_code == 200:
+                img = Image.open(io.BytesIO(res.content))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                img.save(cache_path, 'JPEG', quality=85)
+                img.thumbnail((200, 280), Image.LANCZOS)
+                return img
+        except Exception as e:
+            logging.warning(f"封面下載失敗: {e}")
         return None
 
 # ================= GUI =================
@@ -399,7 +481,7 @@ class Application(tk.Tk):
         y = (screen_height // 2) - (height // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.minsize(width, height)
-        self.resizable(False, False)
+        self.resizable(True, True)
         self.configure(padx=10, pady=5)
 
         self.scraper = NovelScraper()
@@ -414,6 +496,51 @@ class Application(tk.Tk):
         # 綁定視窗關閉事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    def _load_history(self) -> list:
+        history_path = get_base_path() / 'history.json'
+        if history_path.exists():
+            try:
+                return json.loads(history_path.read_text(encoding='utf-8'))
+            except Exception:
+                return []
+        return []
+
+    def _save_to_history(self, url: str, title: str):
+        history = self._load_history()
+        history = [h for h in history if h.get('url') != url]
+        history.insert(0, {'url': url, 'title': title, 'time': datetime.now().strftime('%Y-%m-%d %H:%M')})
+        history = history[:15]
+        history_path = get_base_path() / 'history.json'
+        try:
+            history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
+        except Exception as e:
+            logging.warning(f"無法儲存歷史紀錄: {e}")
+
+    def _show_history_menu(self):
+        history = self._load_history()
+        if not history:
+            messagebox.showinfo("下載歷史", "目前尚無下載記錄。")
+            return
+        
+        menu = tk.Menu(self, tearoff=0)
+        for item in history:
+            label = f"{item['title']}  ({item.get('time', '')})"
+            if len(label) > 40: label = label[:37] + "..."
+            menu.add_command(
+                label=label,
+                command=lambda u=item['url']: self._fill_url_from_history(u)
+            )
+        
+        x = self.history_btn.winfo_rootx()
+        y = self.history_btn.winfo_rooty() + self.history_btn.winfo_height()
+        menu.post(x, y)
+
+    def _fill_url_from_history(self, url: str):
+        self.url_var.set(url)
+        self.entry_url.configure(foreground="black")
+        self.last_checked_url = ""
+        self.check_novel_info()
+
     def on_closing(self):
         if self.app_state == AppState.DOWNLOADING:
             if messagebox.askokcancel("退出確認", "目前正在下載中，確定要強制退出嗎？\n(這將終止所有下載與轉換進程)"):
@@ -423,6 +550,12 @@ class Application(tk.Tk):
             self.destroy()
 
     def create_widgets(self):
+        self._build_url_frame()
+        self._build_settings_frame()
+        self._build_run_frame()
+        self._build_bottom_frame()
+
+    def _build_url_frame(self):
         # 1. 網址與 ID 輸入及預覽區塊
         frame_url = ttk.LabelFrame(self, text="小說來源與資訊預覽")
         frame_url.pack(fill="x", pady=5)
@@ -433,8 +566,8 @@ class Application(tk.Tk):
         ttk.Label(url_input_frame, text="輸入網址或數字 ID:").pack(side="left")
         self.url_var = tk.StringVar()
         self.placeholder = "例如：https://tw.linovelib.com/novel/2.html 或 2"
-        self.entry_url = ttk.Entry(url_input_frame, textvariable=self.url_var, font=("Consolas", 11), width=75)
-        self.entry_url.pack(side="left", padx=5)
+        self.entry_url = ttk.Entry(url_input_frame, textvariable=self.url_var, font=("Consolas", 11), width=50)
+        self.entry_url.pack(side="left", fill="x", expand=True, padx=5)
         self.entry_url.bind("<Return>", self.check_novel_info)
         
         def on_focus_in(event):
@@ -452,8 +585,11 @@ class Application(tk.Tk):
         self.url_var.set(self.placeholder)
         self.entry_url.configure(foreground="gray")
         
-        self.check_btn = ttk.Button(url_input_frame, text="檢查並載入資訊", command=self.check_novel_info)
+        self.check_btn = ttk.Button(url_input_frame, text="檢查並載入資訊", width=16, command=self.check_novel_info)
         self.check_btn.pack(side="left", padx=5)
+
+        self.history_btn = ttk.Button(url_input_frame, text="歷史紀錄", command=self._show_history_menu)
+        self.history_btn.pack(side="left", padx=5)
 
         self.go_url_btn = ttk.Button(url_input_frame, text="前往網址", command=self.open_url)
         self.go_url_btn.pack(side="left", padx=5)
@@ -474,23 +610,23 @@ class Application(tk.Tk):
         
         self.title_var_display = tk.StringVar(value="書名：尚未載入")
         self.title_label = tk.Entry(info_text_frame, textvariable=self.title_var_display, font=("Microsoft JhengHei", 12, "bold"), 
-                                    readonlybackground=self.cget("bg"), relief="flat", state="readonly", width=100)
-        self.title_label.pack(anchor="nw", pady=(0, 5))
+                                    readonlybackground=self.cget("bg"), relief="flat", state="readonly")
+        self.title_label.pack(fill="x", pady=(0, 5))
         
         self.author_var_display = tk.StringVar(value="-")
         self.author_label = tk.Entry(info_text_frame, textvariable=self.author_var_display, font=("Microsoft JhengHei", 10),
-                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly", width=100)
-        self.author_label.pack(anchor="nw", pady=2)
+                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly")
+        self.author_label.pack(fill="x", pady=2)
         
         self.meta_var_display = tk.StringVar(value="-")
         self.meta_label = tk.Entry(info_text_frame, textvariable=self.meta_var_display, font=("Microsoft JhengHei", 10),
-                                   readonlybackground=self.cget("bg"), relief="flat", state="readonly", width=100)
-        self.meta_label.pack(anchor="nw", pady=2)
+                                   readonlybackground=self.cget("bg"), relief="flat", state="readonly")
+        self.meta_label.pack(fill="x", pady=2)
         
         self.update_var_display = tk.StringVar(value="-")
         self.update_label = tk.Entry(info_text_frame, textvariable=self.update_var_display, font=("Microsoft JhengHei", 10),
-                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly", width=100)
-        self.update_label.pack(anchor="nw", pady=2)
+                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly")
+        self.update_label.pack(fill="x", pady=2)
         
         ttk.Label(info_text_frame, text="簡介：", font=("Microsoft JhengHei", 10)).pack(anchor="nw", pady=(2, 0))
 
@@ -518,6 +654,7 @@ class Application(tk.Tk):
         self.status_label = ttk.Label(info_text_frame, text="", foreground="blue")
         self.status_label.pack(anchor="nw", pady=(5, 0))
 
+    def _build_settings_frame(self):
         # 設定區塊_分卷下載與進階選項
         settings_container = tk.Frame(self)
         settings_container.pack(fill="x", pady=2)
@@ -544,24 +681,28 @@ class Application(tk.Tk):
         self.title_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(frame_opt, text="在每章開頭添加章節標題", variable=self.title_var).pack(anchor="w", padx=10, pady=2)
         
+    def _build_run_frame(self):
         # 4. 狀態與執行
         frame_run = tk.Frame(self)
         frame_run.pack(fill="x", pady=5)
         
-        self.start_btn = ttk.Button(frame_run, text="開始下載", command=self.start_process, width=15)
+        self.start_btn = ttk.Button(frame_run, text="開始下載", command=self.start_process, width=20)
         self.start_btn.pack(pady=(0, 2))
         
         self.progress_var = tk.StringVar(value="")
         ttk.Label(frame_run, textvariable=self.progress_var, font=("Microsoft JhengHei", 10), foreground="black").pack()
+
+        self.progress_canvas = tk.Canvas(frame_run, width=500, height=14, bg='#E0E0E0', highlightthickness=0)
+        self.progress_rect = self.progress_canvas.create_rectangle(-100, 0, 0, 14, fill='#06B025', width=0)
         
+    def _build_bottom_frame(self):
         # 下方區塊_分卷對照表與日誌視窗
-        bottom_container = tk.Frame(self)
+        bottom_container = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         bottom_container.pack(fill="both", expand=True, pady=5)
 
         # 2.5 分卷對照表
-        frame_vol_ref = ttk.LabelFrame(bottom_container, text="分卷對照表", width=400)
-        frame_vol_ref.pack(side="left", fill="both", expand=False, padx=(0, 5))
-        frame_vol_ref.pack_propagate(False)
+        frame_vol_ref = ttk.LabelFrame(bottom_container, text="分卷對照表")
+        bottom_container.add(frame_vol_ref, weight=4)
         
         frame_vol_ref.columnconfigure(0, weight=0)
         frame_vol_ref.columnconfigure(1, weight=1)
@@ -578,6 +719,7 @@ class Application(tk.Tk):
         self.header_name.grid(row=0, column=1, sticky="nsew")
 
         self.vol_tree_id = ttk.Treeview(frame_vol_ref, columns=("id"), show="", selectmode="browse", height=1)
+        self.vol_tree_id.column("#0", width=0, stretch=False)
         self.vol_tree_id.column("id", width=50, minwidth=50, stretch=False, anchor="center")
         
         def handle_id_click(event):
@@ -586,18 +728,20 @@ class Application(tk.Tk):
         self.vol_tree_id.bind("<B1-Motion>", handle_id_click)
         
         self.vol_tree_name = ttk.Treeview(frame_vol_ref, columns=("name"), show="", selectmode="browse", height=1)
-        self.vol_tree_name.column("name", width=330, stretch=False, anchor="w")
+        self.vol_tree_name.column("name", width=160, minwidth=100, stretch=True, anchor="w")
         
         vol_v_scroll = ttk.Scrollbar(frame_vol_ref, orient="vertical", command=sync_yview)
         vol_h_scroll = ttk.Scrollbar(frame_vol_ref, orient="horizontal", command=self.vol_tree_name.xview)
         
         def set_vol_v_sb(first, last):
-            if float(first) <= 0.0 and float(last) >= 1.0: vol_v_scroll.grid_remove()
+            f, l = float(first), float(last)
+            if (f <= 0.0 and l >= 0.999) or f == l: vol_v_scroll.grid_remove()
             else: vol_v_scroll.grid(row=1, column=2, sticky="ns")
             vol_v_scroll.set(first, last)
 
         def set_vol_h_sb(first, last):
-            if float(first) <= 0.0 and float(last) >= 1.0: vol_h_scroll.grid_remove()
+            f, l = float(first), float(last)
+            if (f <= 0.0 and l >= 0.999) or f == l: vol_h_scroll.grid_remove()
             else: vol_h_scroll.grid(row=2, column=1, sticky="ew")
             vol_h_scroll.set(first, last)
 
@@ -617,17 +761,18 @@ class Application(tk.Tk):
         
         # 5. 日誌視窗
         frame_log = ttk.LabelFrame(bottom_container, text="執行日誌")
-        frame_log.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        bottom_container.add(frame_log, weight=6)
         frame_log.columnconfigure(0, weight=1)
         frame_log.rowconfigure(0, weight=1)
         
         log_v_scroll = ttk.Scrollbar(frame_log, orient="vertical")
         log_h_scroll = ttk.Scrollbar(frame_log, orient="horizontal")
         
-        self.log_text = tk.Text(frame_log, state="disabled", font=("Consolas", 9), wrap="none")
+        self.log_text = tk.Text(frame_log, state="disabled", font=("Consolas", 9), wrap="none", width=40)
         
         def set_log_sb(first, last, sb, orient):
-            if float(first) <= 0.0 and float(last) >= 1.0: sb.grid_remove()
+            f, l = float(first), float(last)
+            if (f <= 0.0 and l >= 0.999) or f == l: sb.grid_remove()
             else: sb.grid()
             sb.set(first, last)
 
@@ -687,12 +832,38 @@ class Application(tk.Tk):
         if state == AppState.IDLE:
             self.check_btn.config(state="normal", text="檢查並載入資訊")
             self.start_btn.config(state="normal", text="開始下載", command=self.start_process)
+            self.progress_canvas.pack_forget()
         elif state == AppState.CHECKING:
             self.check_btn.config(state="disabled", text="檢查中...")
             self.status_label.config(text="正在獲取小說資訊...", foreground="orange")
         elif state == AppState.DOWNLOADING:
             self.check_btn.config(state="disabled")
             self.start_btn.config(text="取消下載", command=self.cancel_download)
+            self.progress_canvas.pack(pady=(2, 0))
+            self.progress_canvas.coords(self.progress_rect, -100, 0, 0, 14)
+            self._animate_progress_bar()
+
+    def _animate_progress_bar(self):
+        """進度條"""
+        if self.app_state == AppState.DOWNLOADING:
+            coords = self.progress_canvas.coords(self.progress_rect)
+            if not coords: return
+            x1, y1, x2, y2 = coords
+            
+            # 寬度 20% (100px)，每次往右移動 6px
+            step = 6
+            width = 100
+            
+            x1 += step
+            x2 += step
+            
+            # 如果整條綠色都超出右邊界，就從左邊重新出來
+            if x1 > 500:
+                x1 = -width
+                x2 = 0
+                
+            self.progress_canvas.coords(self.progress_rect, x1, y1, x2, y2)
+            self.after(20, self._animate_progress_bar)
 
     def reset_info_labels(self):
         self.title_var_display.set("書名：尚未載入")
@@ -712,7 +883,13 @@ class Application(tk.Tk):
 
     def check_novel_info(self, event=None, auto_start=False):
         if not HAS_PILLOW_REQUESTS:
-            messagebox.showwarning("缺少依賴", "請先在終端機安裝 requests 與 Pillow 套件才能預覽縮圖：\npip install requests Pillow")
+            messagebox.showwarning("缺少依賴項", "請先在終端機安裝 requests 與 Pillow 套件才能預覽縮圖：\npip install requests Pillow")
+            return
+            
+        if self.app_state == AppState.CHECKING:
+            messagebox.showinfo("提示", "正在獲取小說資訊中，請稍候...")
+            return
+        if self.app_state == AppState.DOWNLOADING:
             return
             
         url_input = self.url_var.get().strip()
@@ -721,7 +898,20 @@ class Application(tk.Tk):
             return
             
         url = f"https://tw.linovelib.com/novel/{url_input}.html" if url_input.isdigit() else url_input
+
+        if not url_input.isdigit() and not VALID_URL_PATTERN.match(url_input):
+            messagebox.showwarning(
+                "網址格式錯誤",
+                "請輸入有效的嗶哩輕小說網址或純數字 ID。\n\n"
+                "有效格式範例：\n"
+                "  · https://tw.linovelib.com/novel/2.html\n"
+                "  · 2"
+            )
+            return
+
         self.url_var.set(url)
+        self.entry_url.icursor("end")
+        self.entry_url.xview_moveto(1.0)
         self.entry_url.configure(foreground="black")
             
         if self.app_state != AppState.IDLE: return
@@ -778,8 +968,15 @@ class Application(tk.Tk):
         
         self.desc_text.config(state="normal")
         self.desc_text.delete("1.0", "end")
-        self.desc_text.insert("end", info.desc)
+        
+        # 修正微軟正黑體會將 em-dash (— 或 ―) 顯示為上橫線的字體渲染 Bug
+        # 改用製表符 (Box Drawing Light Horizontal U+2500) 讓線條相連
+        display_desc = info.desc.replace('—', '─').replace('―', '─')
+        self.desc_text.insert("end", display_desc)
+        
         self.desc_text.config(state="disabled")
+        
+        self._save_to_history(info.url, info.title)
 
     def _apply_cover_to_ui(self, photo):
         self.cover_label.config(image=photo, text="", width=200, height=280)
@@ -819,13 +1016,30 @@ class Application(tk.Tk):
             self.start_btn.config(state="disabled", text="正在取消...")
 
     def start_process(self):
+        if self.app_state == AppState.CHECKING:
+            messagebox.showinfo("提示", "正在獲取小說資訊中，請稍候再點擊下載。")
+            return
+            
         url_input = self.url_var.get().strip()
         if not url_input or url_input == self.placeholder:
             messagebox.showwarning("警告", "請輸入小說網址或數字 ID！")
             return
             
         url = f"https://tw.linovelib.com/novel/{url_input}.html" if url_input.isdigit() else url_input
+
+        if not url_input.isdigit() and not VALID_URL_PATTERN.match(url_input):
+            messagebox.showwarning(
+                "網址格式錯誤",
+                "請輸入有效的嗶哩輕小說網址或純數字 ID。\n\n"
+                "有效格式範例：\n"
+                "  · https://tw.linovelib.com/novel/2.html\n"
+                "  · 2"
+            )
+            return
+
         self.url_var.set(url)
+        self.entry_url.icursor("end")
+        self.entry_url.xview_moveto(1.0)
         self.entry_url.configure(foreground="black")
             
         if not self.last_checked_url:
@@ -857,22 +1071,66 @@ class Application(tk.Tk):
         threading.Thread(target=self._thread_run_main_logic, args=(url, o1, o2, o3), daemon=True).start()
 
     def _thread_run_main_logic(self, url, o1, o2, o3):
+        start_time = time.time()
         try:
-            self._main_logic(url, o1, o2, o3)
+            summary = self._main_logic(url, o1, o2, o3)
+            elapsed = int(time.time() - start_time)
+            mins, secs = divmod(elapsed, 60)
+            
             if self.cancel_event.is_set():
                 self.after(0, lambda: self.progress_var.set("狀態: 程序已由使用者取消"))
                 self.after(0, lambda: messagebox.showwarning("已取消", "程序已終止。"))
             else:
                 self.after(0, lambda: self.progress_var.set("狀態: 下載完成"))
-                self.after(0, lambda: messagebox.showinfo("完成", "小說下載與轉換程序已全部完成！"))
+                epub_info = f"共 {summary['epub_count']} 個 EPUB 檔案" if summary and summary.get('epub_count') else "請查閱下載資料夾"
+                time_info = f"{mins} 分 {secs} 秒" if mins > 0 else f"{secs} 秒"
+                folder_name = summary.get('folder_name', '未知') if summary else '未知'
+                self.after(0, lambda: messagebox.showinfo(
+                    "完成",
+                    f"小說下載與轉換程序已全部完成！\n\n"
+                    f"書名：{folder_name}\n"
+                    f"結果：{epub_info}\n"
+                    f"耗時：{time_info}"
+                ))
         except Exception as e:
             if not self.cancel_event.is_set():
-                logging.error(f"發生未預期錯誤: {e}")
+                logging.error(f"發生錯誤: {e}", exc_info=True)
                 self.after(0, lambda: self.progress_var.set("狀態: 發生錯誤"))
-                self.after(0, lambda err=e: messagebox.showerror("錯誤", f"執行時發生錯誤:\n{err}"))
+                title, msg = classify_error(e)
+                self.after(0, lambda t=title, m=msg: messagebox.showerror(t, m))
         finally:
             self.current_process = None
             self.after(0, lambda: self.set_app_state(AppState.IDLE))
+
+    def _tail_log_file(self, log_path: Path):
+        """持續讀取下載器 log 檔並顯示到 UI，直到下載結束或取消"""
+        # 等待 log 檔出現（最多 10 秒）
+        for _ in range(20):
+            if log_path.exists():
+                break
+            time.sleep(0.5)
+        else:
+            return  # log 檔沒出現就放棄
+
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                f.seek(0, 2)  # 跳到末尾，只看後續新增的內容
+                while not self.cancel_event.is_set():
+                    # 如果 process 已結束，再讀一次把剩餘內容清空
+                    process_done = (self.current_process is None or
+                                    self.current_process.poll() is not None)
+                    line = f.readline()
+                    if line:
+                        stripped = line.strip()
+                        if stripped:
+                            # 用 after(0, ...) 確保 UI 更新在主執行緒
+                            self.after(0, lambda l=stripped: logging.info(f"[下載器] {l}"))
+                    else:
+                        if process_done:
+                            break
+                        time.sleep(0.3)
+        except Exception as e:
+            logging.warning(f"讀取下載器 log 時發生錯誤: {e}")
 
     def _run_downloader_process(self, exe_path: Path, url: str, o1: str, o2: str, o3: str, cwd: str) -> bool:
         logging.info("正在啟動下載器...")
@@ -894,6 +1152,14 @@ class Application(tk.Tk):
             self.current_process.stdin.write(f"{url}\n{o1}\n{o2}\n{o3}\n")
             self.current_process.stdin.flush()
             self.current_process.stdin.close()
+            
+            log_path = Path(cwd) / 'bili_novel.log'
+            tail_thread = threading.Thread(
+                target=self._tail_log_file,
+                args=(log_path,),
+                daemon=True
+            )
+            tail_thread.start()
             
             start_time = time.time()
             while self.current_process.poll() is None:
@@ -980,6 +1246,19 @@ class Application(tk.Tk):
                 new_folder = max(new_folders, key=lambda p: p.stat().st_mtime)
                 logging.info(f"偵測到新下載資料夾: {new_folder.name}")
                 process_downloaded_folder(new_folder, base_path)
+                
+                # 改進7: 收集摘要資訊
+                summary = {
+                    'epub_count': 0,
+                    'folder_name': new_folder.name,
+                }
+                trad_dir = base_path / DIR_DOWNLOADS / DIR_TRAD
+                if trad_dir.exists():
+                    tw_folder_name = sanitize_filename(S2TW_CONVERTER.convert(new_folder.name))
+                    result_folder = trad_dir / tw_folder_name
+                    if result_folder.exists():
+                        summary['epub_count'] = len(list(result_folder.glob('*.epub')))
+                return summary
             else:
                 logging.warning("下載器執行完畢，但未偵測到新資料夾產生。")
                 raise Exception("未偵測到下載檔案，下載可能已失敗 (請檢查日誌)。")
@@ -987,6 +1266,7 @@ class Application(tk.Tk):
             if not self.cancel_event.is_set():
                 logging.error("下載失敗，終止後續處理。")
                 raise Exception("核心下載程序執行失敗。")
+        return {}
 
 if __name__ == "__main__":
     app = Application()

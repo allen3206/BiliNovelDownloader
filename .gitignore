@@ -15,6 +15,7 @@ downloads/
 temp/
 log/
 *.log
+*.json
 
 # 忽略核心下載器執行檔 (由使用者自行下載或在 Releases 中提供)
 tools/*.exe
@@ -23,5 +24,6 @@ tools/*.exe
 .DS_Store
 Thumbs.db
 
-*.png
-note
+# note
+note1
+note2
