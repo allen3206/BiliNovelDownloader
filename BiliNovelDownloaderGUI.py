@@ -1250,7 +1250,7 @@ class Application(tk.Tk):
                 # 改進7: 收集摘要資訊
                 summary = {
                     'epub_count': 0,
-                    'folder_name': new_folder.name,
+                    'folder_name': S2TW_CONVERTER.convert(new_folder.name),
                 }
                 trad_dir = base_path / DIR_DOWNLOADS / DIR_TRAD
                 if trad_dir.exists():
