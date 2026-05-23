@@ -48,6 +48,7 @@ VALID_URL_PATTERN = re.compile(
 
 # 設定全域 OpenCC 實例，避免重複載入字典檔
 S2TW_CONVERTER = opencc.OpenCC('s2tw')
+DOWNLOAD_TIMEOUT_SECONDS = 21600  # 下載超時上限（秒），預設 6 小時
 
 # ================= 核心工具函式 =================
 
@@ -76,6 +77,59 @@ def sanitize_filename(name: str) -> str:
     """清理檔案/資料夾名稱中的不合法字元"""
     return re.sub(r'[\\/*?:"<>|]', "", name)
 
+import socket as _socket
+
+_SINGLE_INSTANCE_PORT = 19876
+_lock_socket = None
+
+def _listen_for_reactivation(app: 'Application'):
+    """第一個實例在背景監聽，收到 show 訊號就把視窗帶到前景"""
+    def _server():
+        while True:
+            try:
+                conn, _ = _lock_socket.accept()
+                msg = conn.recv(16).decode(errors='ignore').strip()
+                conn.close()
+                if msg == "show":
+                    app.after(0, _bring_to_front, app)
+            except Exception:
+                break
+    threading.Thread(target=_server, daemon=True).start()
+
+def _bring_to_front(app: 'Application'):
+    """把視窗帶到最前面"""
+    app.deiconify()
+    app.lift()
+    app.focus_force()
+    try:
+        ctypes.windll.user32.FlashWindow(int(app.wm_frame()), True)
+    except Exception:
+        pass
+
+def ensure_single_instance() -> bool:
+    """
+    回傳 True  → 這是第一個實例，可以繼續啟動
+    回傳 False → 已有實例在跑，已發送 show 訊號，應靜默退出
+    """
+    global _lock_socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 0)
+    try:
+        sock.bind(('127.0.0.1', _SINGLE_INSTANCE_PORT))
+        sock.listen(5)
+        _lock_socket = sock
+        return True
+    except OSError:
+        sock.close()
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.connect(('127.0.0.1', _SINGLE_INSTANCE_PORT))
+            s.sendall(b"show")
+            s.close()
+        except Exception:
+            pass
+        return False
+
 def find_downloader_exe(base_path: Path) -> Optional[Path]:
     """動態尋找 tools 目錄下的下載器執行檔"""
     tools_dir = base_path / 'tools'
@@ -87,9 +141,11 @@ def find_downloader_exe(base_path: Path) -> Optional[Path]:
 def kill_existing_packer():
     """精準地結束所有相關的下載器進程"""
     try:
-        for proc in psutil.process_iter(['pid', 'name']):
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
-                if 'bili_novel_packer' in proc.info['name'].lower():
+                name_match = 'bili_novel_packer' in (proc.info.get('name') or '').lower()
+                cmd_match = any('bili_novel_packer' in (c or '').lower() for c in (proc.info.get('cmdline') or []))
+                if name_match or cmd_match:
                     proc.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
@@ -153,6 +209,8 @@ def merge_folders(src: Path, dst: Path):
             logging.info(f"檔案已覆蓋/複製: {dst_item}")
 
 def convert_epub_with_opencc(input_epub: Path, output_epub: Path, converter: opencc.OpenCC):
+    if not input_epub.exists() or input_epub.stat().st_size < 100:
+        raise ValueError(f"EPUB 檔案無效或疑似損壞（路徑：{input_epub}，大小：{input_epub.stat().st_size if input_epub.exists() else '不存在'} bytes）")
     text_extensions = ('.html', '.xhtml', '.xml', '.opf', '.ncx', '.txt', '.css')
     with zipfile.ZipFile(input_epub, 'r') as zin:
         with zipfile.ZipFile(output_epub, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -220,7 +278,6 @@ def process_downloaded_folder(
         try:
             convert_epub_with_opencc(epub_file, temp_output, S2TW_CONVERTER)
 
-            # 確認 temp 檔確實存在且有內容，才進行覆蓋
             if not temp_output.exists() or temp_output.stat().st_size == 0:
                 raise Exception("轉換輸出檔不存在或大小為零，取消覆蓋原檔")
 
@@ -229,7 +286,6 @@ def process_downloaded_folder(
             logger.info(f"轉換成功: {epub_file.name}")
         except Exception as e:
             logger.error(f"轉換失敗: {epub_file.name}, 錯誤: {e}")
-            # 清理 temp 檔，但原檔不動
             if temp_output.exists():
                 temp_output.unlink()
                 logger.info(f"已清除暫存檔: {temp_output.name}")
@@ -501,7 +557,8 @@ class Application(tk.Tk):
         if history_path.exists():
             try:
                 return json.loads(history_path.read_text(encoding='utf-8'))
-            except Exception:
+            except Exception as e:
+                logging.warning(f"歷史紀錄檔讀取失敗，已重置: {e}")
                 return []
         return []
 
@@ -556,7 +613,6 @@ class Application(tk.Tk):
         self._build_bottom_frame()
 
     def _build_url_frame(self):
-        # 1. 網址與 ID 輸入及預覽區塊
         frame_url = ttk.LabelFrame(self, text="小說來源與資訊預覽")
         frame_url.pack(fill="x", pady=5)
         
@@ -594,7 +650,6 @@ class Application(tk.Tk):
         self.go_url_btn = ttk.Button(url_input_frame, text="前往網址", command=self.open_url)
         self.go_url_btn.pack(side="left", padx=5)
 
-        # 預覽資訊區塊
         preview_frame = tk.Frame(frame_url)
         preview_frame.pack(fill="x", padx=10, pady=5)
         
@@ -1176,7 +1231,7 @@ class Application(tk.Tk):
                 self.after(0, lambda ts=time_str: self.progress_var.set(f"狀態: 下載中...   (已耗時 {ts})  "))
                 time.sleep(1)
                 
-                if elapsed > 18000:
+                if elapsed > DOWNLOAD_TIMEOUT_SECONDS:
                     self.current_process.kill()
                     self.current_process.wait()
                     self.after(0, lambda: self.progress_var.set("狀態: 下載超時"))
@@ -1224,6 +1279,8 @@ class Application(tk.Tk):
         
         if self.cancel_event.is_set(): return
 
+        before_snapshot = {x for x in temp_dir.iterdir() if x.is_dir()}
+
         if self._run_downloader_process(exe_path, url, o1, o2, o3, cwd=str(temp_dir)):
             if self.cancel_event.is_set(): return
             
@@ -1240,14 +1297,14 @@ class Application(tk.Tk):
                         if i == 4: logging.warning(f"移動 log 檔失敗: {e}")
                         time.sleep(1)
                     
-            new_folders = [x for x in temp_dir.iterdir() if x.is_dir() and x.name not in {'.ipynb_checkpoints'}]
+            after_snapshot = {x for x in temp_dir.iterdir() if x.is_dir()}
+            new_folders = [x for x in (after_snapshot - before_snapshot) if x.name not in {'.ipynb_checkpoints'}]
             
             if new_folders:
-                new_folder = max(new_folders, key=lambda p: p.stat().st_mtime)
+                new_folder = new_folders[0]
                 logging.info(f"偵測到新下載資料夾: {new_folder.name}")
                 process_downloaded_folder(new_folder, base_path)
                 
-                # 改進7: 收集摘要資訊
                 summary = {
                     'epub_count': 0,
                     'folder_name': S2TW_CONVERTER.convert(new_folder.name),
@@ -1269,5 +1326,8 @@ class Application(tk.Tk):
         return {}
 
 if __name__ == "__main__":
+    if not ensure_single_instance():
+        sys.exit(0)
     app = Application()
+    _listen_for_reactivation(app)
     app.mainloop()
