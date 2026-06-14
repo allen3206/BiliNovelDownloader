@@ -1,0 +1,5 @@
+本軟體的小說下載功能由 bili_novel_packer 提供（作者 Montaro2017，MIT License），以子程序方式呼叫，未修改其原始碼
+
+授權全文見 tools/LICENSE-bili_novel_packer.txt
+
+專案網址：https://github.com/Montaro2017/bili_novel_packer

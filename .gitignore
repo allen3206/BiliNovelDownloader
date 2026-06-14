@@ -1,29 +1,29 @@
-# 忽略 Python 快取
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# 忽略打包工具產生的資料夾
+# Build and packaging output
 build/
 dist/
-*.spec
 *.zip
 BiliNovelDownloader-*/
 
-# 忽略下載的暫存與結果
+# Download temp files and results
 downloads/
 temp/
 log/
 *.log
 *.json
 
-# 忽略核心下載器執行檔 (由使用者自行下載或在 Releases 中提供)
+# Core downloader executable (downloaded by user or provided in Releases)
 tools/*.exe
 
-# 忽略作業系統產生的隱藏檔
+# OS-generated hidden files
 .DS_Store
 Thumbs.db
 
-# note
+# notes
 note1
 note2
+.claude

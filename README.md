@@ -17,7 +17,7 @@
 *   **圖形介面**：貼上網址或數字 ID 即可預覽小說資訊（封面、簡介、目錄）
 *   **簡繁轉換**：原站僅提供簡體版，程式下載完成後自動透過 `opencc` 轉換，同時輸出簡體與繁體兩份 EPUB（含資料夾與檔案名稱），分別存放於 `downloads/簡體/` 與 `downloads/繁體/`
 *   **即時狀態追蹤**：內建執行日誌與進度提示，及時查看下載資訊、錯誤訊息
-*   **分卷下載**：可選下載**全部範圍**或**指定範圍**（例如：`1, 3-5, 9`）
+*   **分卷下載**：可選下載 **全部範圍** 或 **指定範圍**（例如：`1, 3-5, 9`）
 *   **進階整合選項**：可選擇「合併選取的分卷為單一檔案」，或是「在每章開頭自動添加章節標題」
 *   **下載歷史紀錄**：自動儲存近期載入過的小說網址，點擊下拉選單即可重新載入
 *   **智慧快取機制**：書籍封面圖片自動快取 24 小時，提升二次載入速度
@@ -26,7 +26,7 @@
 
 **系統需求**：Windows 10 / 11（64 位元）
 
-1. 前往本專案的 [Releases 頁面](https://github.com/allen3206/BiliNovelDownloader/releases) 下載最新的 `.zip` 壓縮檔
+1. 前往 [Releases 頁面](https://github.com/allen3206/BiliNovelDownloader/releases) 下載最新的 `.zip` 壓縮檔
 2. 將下載的壓縮檔 **解壓縮** 到電腦中（例如：桌面或 D 槽）
 3. 打開解壓縮後的資料夾，會看到以下結構：
    ```text
@@ -34,8 +34,11 @@
    ├── BiliNovelDownloader.exe             (主程式)
    ├── readme.txt                             (使用須知)
    ├── LICENSE.txt
+   ├── NOTICES.txt
+   ├── THIRD_PARTY_LICENSES.txt
    └── tools/
-       └── bili_novel_packer-xxx-windows.exe  (核心下載器)
+       ├── bili_novel_packer-xxx-windows.exe  (核心下載器)
+       └── LICENSE-bili_novel_packer.txt
    ```
 4. **雙擊 `BiliNovelDownloader.exe` 即可開始使用**
 
@@ -58,7 +61,7 @@ downloads/
 
 ## 授權與聲明
 
-*   授權條款 : [MIT License](LICENSE)
+*   授權條款：[MIT License](LICENSE)
 *   本專案核心下載功能使用 [bili_novel_packer](https://github.com/Montaro2017/bili_novel_packer)
 *   本工具僅供學習與交流使用，請勿用於商業用途或大量惡意抓取
 
@@ -89,4 +92,10 @@ downloads/
 在專案根目錄下執行：
 ```bash
 python BiliNovelDownloader.py
+```
+
+### 打包成 exe
+
+```bash
+pyinstaller BiliNovelDownloader.spec
 ```
