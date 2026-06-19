@@ -14,6 +14,20 @@ from core import USER_AGENT, get_base_path
 from epub_tools import S2TW_CONVERTER
 
 
+# 下載器 log 出現這些字串時，視為網路／DNS 連線失敗
+PACKER_NETWORK_MARKERS = (
+    "Failed host lookup",   # DNS 解析不到網域
+    "SocketException",      # 連線層失敗，含 DNS、逾時、被拒
+    "ClientException",      # Dart http 連線異常
+    "HandshakeException",   # TLS 交握失敗，常見於連線被中間阻斷
+)
+
+
+def packer_log_is_network_error(log_text: str) -> bool:
+    """判斷下載器 log 是否為網路／DNS 連線失敗。"""
+    return any(marker in log_text for marker in PACKER_NETWORK_MARKERS)
+
+
 def classify_error(e: Exception) -> tuple[str, str]:
     """回傳 (錯誤標題, 使用者友善訊息)"""
     import requests as req_module

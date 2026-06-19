@@ -22,7 +22,7 @@ from PIL import ImageTk
 from core import (DIR_DOWNLOADS, DIR_TRAD, VALID_URL_PATTERN,
                   DOWNLOAD_TIMEOUT_SECONDS, STALL_TIMEOUT_SECONDS,
                   get_resource_path, get_base_path, APP_VERSION, sanitize_filename)
-from scraper import NovelScraper, NovelInfo, classify_error
+from scraper import NovelScraper, NovelInfo, classify_error, packer_log_is_network_error
 from epub_tools import S2TW_CONVERTER, process_downloaded_folder, clear_temp_directory
 from packer import find_downloader_exe, write_packer_pid, clear_packer_pid, cleanup_orphaned_packer
 
@@ -789,6 +789,12 @@ class Application(tk.Tk):
                 self.after(0, lambda: self.progress_var.set("狀態: 下載超時，已終止"))
                 self.after(0, lambda: messagebox.showwarning("下載超時",
                     f"下載超過 {DOWNLOAD_TIMEOUT_SECONDS // 3600} 小時上限，已強制終止。"))
+            elif self._abort_reason == "network":
+                self.after(0, lambda: self.progress_var.set("狀態: 無法連線到伺服器"))
+                self.after(0, lambda: messagebox.showerror("網路連線失敗",
+                    "無法連線到下載伺服器 www.bilinovel.com，下載已中止。\n\n"
+                    "可能是你的網路或 DNS 連不到這個網域。可以嘗試改公用 DNS 或開 VPN 後再試。\n\n"
+                    "詳細紀錄見 log 資料夾。"))
             elif self._abort_reason == "error":
                 self.after(0, lambda: self.progress_var.set("狀態: 下載器異常結束"))
                 self.after(0, lambda: messagebox.showerror("下載失敗",
@@ -845,6 +851,14 @@ class Application(tk.Tk):
                         time.sleep(0.3)
         except Exception as e:
             logging.warning(f"讀取下載器 log 時發生錯誤: {e}")
+
+    def _classify_packer_failure(self, log_path: Path) -> str:
+        """讀下載器 log 判斷失敗型態：網路／DNS 問題回 'network'，其餘回 'error'。"""
+        try:
+            log_text = log_path.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            return "error"
+        return "network" if packer_log_is_network_error(log_text) else "error"
 
     def _run_downloader_process(self, exe_path: Path, url: str, o1: str, o2: str, o3: str, cwd: str) -> bool:
         logging.info("正在啟動下載器...")
@@ -914,12 +928,13 @@ class Application(tk.Tk):
             else:
                 if not self.cancel_event.is_set():
                     logging.error(f"下載器異常退出，代碼: {self.current_process.returncode}")
-                    self._abort_reason = "error"
+                    self._abort_reason = self._classify_packer_failure(log_path)
                 return False
                 
         except Exception as e:
             if not self.cancel_event.is_set():
                 logging.error(f"執行下載器錯誤: {e}")
+                self._abort_reason = "error"
             return False
         finally:
             if self.current_process:
@@ -957,7 +972,12 @@ class Application(tk.Tk):
             if self.cancel_event.is_set(): return
             
             log_file = temp_dir / 'bili_novel.log'
+            packer_log_text = ""
             if log_file.exists():
+                try:
+                    packer_log_text = log_file.read_text(encoding='utf-8', errors='ignore')
+                except OSError:
+                    pass
                 for i in range(5):
                     try:
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -988,9 +1008,11 @@ class Application(tk.Tk):
                 return {'epub_count': total_epub, 'folder_name': folder_name}
             else:
                 logging.warning("下載器執行完畢，但未偵測到新資料夾產生。")
+                if packer_log_is_network_error(packer_log_text):
+                    self._abort_reason = "network"
+                    return {}
                 raise Exception("未偵測到下載檔案，下載可能已失敗 (請檢查日誌)。")
         else:
             if not self.cancel_event.is_set():
                 logging.error("下載失敗，終止後續處理。")
-                raise Exception("核心下載程序執行失敗。")
         return {}
