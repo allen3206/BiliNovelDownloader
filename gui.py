@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -128,6 +129,7 @@ class Application(tk.Tk):
         self._abort_reason = None
         self.last_activity_time = 0
         self.last_checked_url = ""
+        self._pg_reset()
 
         self.create_widgets()
         self.setup_logging()
@@ -308,25 +310,19 @@ class Application(tk.Tk):
         info_text_frame = tk.Frame(preview_frame)
         info_text_frame.pack(side="left", fill="both", expand=True)
         
-        self.title_var_display = tk.StringVar(value="書名：尚未載入")
-        self.title_label = tk.Entry(info_text_frame, textvariable=self.title_var_display, font=("Microsoft JhengHei", 12, "bold"), 
-                                    readonlybackground=self.cget("bg"), relief="flat", state="readonly")
-        self.title_label.pack(fill="x", pady=(0, 5))
-        
-        self.author_var_display = tk.StringVar(value="-")
-        self.author_label = tk.Entry(info_text_frame, textvariable=self.author_var_display, font=("Microsoft JhengHei", 10),
-                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly")
-        self.author_label.pack(fill="x", pady=2)
-        
-        self.meta_var_display = tk.StringVar(value="-")
-        self.meta_label = tk.Entry(info_text_frame, textvariable=self.meta_var_display, font=("Microsoft JhengHei", 10),
-                                   readonlybackground=self.cget("bg"), relief="flat", state="readonly")
-        self.meta_label.pack(fill="x", pady=2)
-        
-        self.update_var_display = tk.StringVar(value="-")
-        self.update_label = tk.Entry(info_text_frame, textvariable=self.update_var_display, font=("Microsoft JhengHei", 10),
-                                     readonlybackground=self.cget("bg"), relief="flat", state="readonly")
-        self.update_label.pack(fill="x", pady=2)
+        self.title_text = self._make_info_field(info_text_frame, ("Microsoft JhengHei", 12, "bold"))
+        self.title_text.pack(fill="x", pady=(0, 5))
+        self.author_text = self._make_info_field(info_text_frame, ("Microsoft JhengHei", 10))
+        self.author_text.pack(fill="x", pady=2)
+        self.meta_text = self._make_info_field(info_text_frame, ("Microsoft JhengHei", 10))
+        self.meta_text.pack(fill="x", pady=2)
+        self.update_text = self._make_info_field(info_text_frame, ("Microsoft JhengHei", 10))
+        self.update_text.pack(fill="x", pady=2)
+
+        self._set_info_field(self.title_text, "書名：尚未載入")
+        self._set_info_field(self.author_text, "-")
+        self._set_info_field(self.meta_text, "-")
+        self._set_info_field(self.update_text, "-")
         
         ttk.Label(info_text_frame, text="簡介：", font=("Microsoft JhengHei", 10)).pack(anchor="nw", pady=(2, 0))
 
@@ -335,8 +331,9 @@ class Application(tk.Tk):
         desc_container.columnconfigure(0, weight=1)
 
         desc_v_scroll = ttk.Scrollbar(desc_container, orient="vertical")
-        self.desc_text = tk.Text(desc_container, height=7, font=("Microsoft JhengHei", 10), foreground="black", 
-                                 state="disabled", wrap="word", borderwidth=0, highlightthickness=0)
+        self.desc_text = tk.Text(desc_container, height=7, font=("Microsoft JhengHei", 10), foreground="black",
+                                 wrap="word", borderwidth=0, highlightthickness=0, insertwidth=0)
+        self.desc_text.bind("<Key>", self._readonly_text_key)  # 唯讀但可選取
 
         def set_desc_sb(first, last):
             if float(first) <= 0.0 and float(last) >= 1.0:
@@ -350,9 +347,52 @@ class Application(tk.Tk):
 
         self.desc_text.config(bg=self.cget("bg"))
         self.desc_text.grid(row=0, column=0, sticky="nsew")
+        self._set_desc("-")
 
         self.status_label = ttk.Label(info_text_frame, text="", foreground="blue")
         self.status_label.pack(anchor="nw", pady=(5, 0))
+
+    def _readonly_text_key(self, event):
+        """讓 Text 唯讀但仍可選取, 複製"""
+        if event.state & 0x0004 and event.keysym.lower() in ("c", "insert"):
+            return  # Ctrl+C, Ctrl+Insert 複製
+        if not (event.state & 0x0004) and event.keysym in (
+            "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+            "Shift_L", "Shift_R", "Control_L", "Control_R",
+        ):
+            return  # 移動游標與選取用的鍵
+        return "break"
+
+    def _autosize_info_field(self, widget):
+        """依實際換行後的顯示行數調整 Text 高度，讓長字串完整顯示不被裁切"""
+        try:
+            res = widget.count("1.0", "end-1c", "displaylines")
+            n = res[0] if isinstance(res, tuple) else res
+        except Exception:
+            n = 1
+        n = max(int(n or 1), 1)
+        if int(widget.cget("height")) != n:
+            widget.configure(height=n)
+
+    def _make_info_field(self, parent, font):
+        """建立唯讀、可選取、會自動換行並依內容調整高度的資訊欄位"""
+        txt = tk.Text(parent, font=font, height=1, wrap="word", relief="flat",
+                      borderwidth=0, highlightthickness=0, padx=0, pady=0,
+                      insertwidth=0, bg=self.cget("bg"))
+        txt.bind("<Key>", self._readonly_text_key)
+        txt.bind("<Configure>", lambda e, w=txt: self._autosize_info_field(w))
+        return txt
+
+    def _set_info_field(self, widget, text):
+        """更新資訊欄位內容並在版面就緒後重算高度"""
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.after_idle(lambda: self._autosize_info_field(widget))
+
+    def _set_desc(self, text):
+        """更新簡介內容（唯讀 Text，免切換 state）"""
+        self.desc_text.delete("1.0", "end")
+        self.desc_text.insert("1.0", text)
 
     def _build_settings_frame(self):
         # 設定區塊_分卷下載與進階選項
@@ -537,6 +577,7 @@ class Application(tk.Tk):
             self.check_btn.config(state="disabled", text="檢查中...")
             self.status_label.config(text="正在獲取小說資訊...", foreground="orange")
         elif state == AppState.DOWNLOADING:
+            self._pg_reset()
             self.check_btn.config(state="disabled")
             self.start_btn.config(text="取消下載", command=self.cancel_download)
             self.progress_canvas.pack(pady=(2, 0))
@@ -544,37 +585,144 @@ class Application(tk.Tk):
             self._animate_progress_bar()
 
     def _animate_progress_bar(self):
-        """進度條"""
-        if self.app_state == AppState.DOWNLOADING:
-            coords = self.progress_canvas.coords(self.progress_rect)
-            if not coords: return
+        """進度條：有真實章節進度時顯示填充，否則退回原滑動動畫"""
+        if self.app_state != AppState.DOWNLOADING:
+            return
+        coords = self.progress_canvas.coords(self.progress_rect)
+        if not coords:
+            return
+
+        frac = self._real_progress_fraction()
+        if frac is not None:
+            # 真實進度：從左端填到對應比例
+            self.progress_canvas.coords(self.progress_rect, 0, 0, frac * 500, 14)
+            # 進度數字與進度條同一輪更新，避免數字比進度條慢
+            if not self._pg_complete:
+                text = self._build_progress_text(self._pg_elapsed_str)
+                if text != self._pg_last_label:
+                    self._pg_last_label = text
+                    self.progress_var.set(text)
+        else:
+            # fallback：尚無可用進度標記時維持滑動動畫
             x1, y1, x2, y2 = coords
-            
-            # 寬度 20% (100px)，每次往右移動 6px
-            step = 6
-            width = 100
-            
+            step, width = 6, 100
             x1 += step
             x2 += step
-            
-            # 如果整條綠色都超出右邊界，就從左邊重新出來
             if x1 > 500:
-                x1 = -width
-                x2 = 0
-                
+                x1, x2 = -width, 0
             self.progress_canvas.coords(self.progress_rect, x1, y1, x2, y2)
-            self.after(20, self._animate_progress_bar)
+
+        self.after(20, self._animate_progress_bar)
+
+    def _pg_reset(self):
+        """重置真實進度追蹤狀態（每次下載開始時呼叫）"""
+        self._pg_vols = None              # 卷名清單，來自 packer 的 PackArgument
+        self._pg_total = []               # 每卷總章數（該卷列目錄的 ==> 行數）
+        self._pg_fetch = []               # 每卷已抓取的章節頁數（GET {url} OK）
+        self._pg_res = []                 # 每卷已解析／打包完成的章數（OK 書名 行）
+        self._pg_cur = -1                 # 目前顯示的卷索引（0 起算，尚未開始為 -1）
+        self._pg_url_vol = {}             # 章節網址 → 卷索引，列目錄時建立
+        self._pg_fetched_urls = set()     # 已計入抓取的章節網址，避免重試重複計數
+        self._pg_active = False           # 是否已有抓取／解析活動，決定顯示真實進度或動畫
+        self._pg_complete = False         # 下載器成功結束，進度補滿 100%
+        self._pg_frac_hi = 0.0            # 已顯示過的最高比例，用來鉗制成只進不退
+        self._pg_elapsed_str = "00:00"    # 由監看執行緒每秒更新，供進度標籤顯示耗時
+        self._pg_last_label = None        # 已顯示的標籤文字，避免重複 set
+
+    def _match_vol(self, body: str) -> int:
+        """判斷這行章節屬於哪一卷，取最長相符的卷名以避免前綴撞名，找不到回 -1"""
+        best, best_len = -1, -1
+        for k, name in enumerate(self._pg_vols):
+            if body.startswith(name) and len(name) > best_len:
+                best, best_len = k, len(name)
+        return best
+
+    def _update_progress_from_line(self, raw_line: str):
+        """從下載器 log 逐行解析進度訊號（在 tail 執行緒呼叫）
+
+        下載一章要經兩階段：先「抓頁面」(`GET {url} OK`)、再「解析＋圖片＋打包」(`OK 書名`)
+        列目錄的 ==> 行同時帶卷名與章節網址，用來建「網址→卷索引」表並累計總章數
+        抓頁面與解析各算半步，進度條到滿代表兩階段都完成，避免頁抓完就滿進度條還在跑
+        0.2.43 兩階段交錯、0.2.44 先抓完再解析，皆適用
+        """
+        content = raw_line.lstrip('│ \t')
+        if self._pg_vols is None:
+            if content.startswith('PackArgument'):
+                m = re.search(r'packVolumes:\s*\[(.*)\]', content)
+                if m and m.group(1).strip():
+                    vols = [v.strip() for v in m.group(1).split(', ') if v.strip()]
+                    if vols:
+                        self._pg_vols = vols
+                        self._pg_total = [0] * len(vols)
+                        self._pg_fetch = [0] * len(vols)
+                        self._pg_res = [0] * len(vols)
+            return
+        if content.startswith('==> '):
+            body = content[4:]
+            k = self._match_vol(body)
+            if k >= 0:
+                self._pg_total[k] += 1
+                self._pg_url_vol[body.rsplit(' ', 1)[-1]] = k  # 最後一個 token 是章節網址
+        elif content.startswith('GET ') and content.endswith(' OK'):
+            parts = content.split(' ')
+            if len(parts) >= 2:
+                url = parts[1]
+                k = self._pg_url_vol.get(url)  # 只認章節頁網址，圖片等其他 GET 不在表中
+                if k is not None and url not in self._pg_fetched_urls and self._pg_fetch[k] < self._pg_total[k]:
+                    self._pg_fetched_urls.add(url)
+                    self._pg_fetch[k] += 1
+                    self._pg_cur = k
+                    self._pg_active = True
+        elif content.startswith('OK '):
+            k = self._match_vol(content[3:])
+            if k >= 0 and self._pg_res[k] < self._pg_total[k]:
+                self._pg_res[k] += 1
+                self._pg_cur = k
+                self._pg_active = True
+
+    def _real_progress_fraction(self):
+        """回傳整體進度比例 0.0~1.0；尚無可用資料時回 None（改用滑動動畫）"""
+        if self._pg_complete:
+            return 1.0
+        if not self._pg_active or not self._pg_vols or self._pg_cur < 0:
+            return None
+        # 每卷各佔 1/N，卷內以（已抓頁 + 已解析）/（2×總章）填充，兩階段各半步
+        n = len(self._pg_vols)
+        acc = 0.0
+        for k in range(n):
+            t = self._pg_total[k]
+            if t > 0:
+                acc += min((self._pg_fetch[k] + self._pg_res[k]) / (2 * t), 1.0)
+        overall = min(max(acc / n, 0.0), 1.0)
+        # 單調鉗制：只前進不後退
+        if overall < self._pg_frac_hi:
+            overall = self._pg_frac_hi
+        else:
+            self._pg_frac_hi = overall
+        return overall
+
+    def _build_progress_text(self, time_str: str) -> str:
+        """組合進度標籤文字；顯示章數由半步進度換算，與進度條同步"""
+        if not self._pg_active or not self._pg_vols or self._pg_cur < 0:
+            return f"狀態: 下載中...   (已耗時 {time_str})  "
+        k = self._pg_cur
+        total = self._pg_total[k]
+        if total <= 0:
+            return f"狀態: 下載中...   (已耗時 {time_str})  "
+        done = min(int((self._pg_fetch[k] + self._pg_res[k]) / 2), total)
+        if len(self._pg_vols) > 1:
+            core = f"第 {k + 1}/{len(self._pg_vols)} 卷 · 本卷 {done}/{total} 章"
+        else:
+            core = f"{done}/{total} 章"
+        return f"下載中… {core} · 已耗時 {time_str}"
 
     def reset_info_labels(self):
-        self.title_var_display.set("書名：尚未載入")
-        self.author_var_display.set("-")
-        self.meta_var_display.set("-")
-        self.update_var_display.set("-")
-        
-        self.desc_text.config(state="normal")
-        self.desc_text.delete("1.0", "end")
-        self.desc_text.config(state="disabled")
-        
+        self._set_info_field(self.title_text, "書名：尚未載入")
+        self._set_info_field(self.author_text, "-")
+        self._set_info_field(self.meta_text, "-")
+        self._set_info_field(self.update_text, "-")
+        self._set_desc("-")
+
         for item in self.vol_tree_id.get_children(): self.vol_tree_id.delete(item)
         for item in self.vol_tree_name.get_children(): self.vol_tree_name.delete(item)
         
@@ -614,7 +762,7 @@ class Application(tk.Tk):
 
         self.set_app_state(AppState.CHECKING)
         self.reset_info_labels()
-        self.title_var_display.set("書名：載入中...")
+        self._set_info_field(self.title_text, "書名：載入中...")
         
         thread = threading.Thread(target=self._thread_fetch_info, args=(url, auto_start), daemon=True)
         thread.start()
@@ -661,21 +809,16 @@ class Application(tk.Tk):
             self.set_app_state(AppState.IDLE)
 
     def _apply_info_to_ui(self, info: NovelInfo):
-        self.title_var_display.set(f"書名：{info.title}")
-        self.author_var_display.set(f"作者：{info.author}")
-        self.meta_var_display.set(f"{info.status} | {info.tags} | {info.rating}")
-        self.update_var_display.set(f"最新進度：{info.latest} (更新時間：{info.update_time})")
-        
-        self.desc_text.config(state="normal")
-        self.desc_text.delete("1.0", "end")
-        
+        self._set_info_field(self.title_text, f"書名：{info.title}")
+        self._set_info_field(self.author_text, f"作者：{info.author}")
+        self._set_info_field(self.meta_text, f"{info.status} | {info.tags} | {info.rating}")
+        self._set_info_field(self.update_text, f"最新進度：{info.latest} (更新時間：{info.update_time})")
+
         # 修正微軟正黑體會將 em-dash (— 或 ―) 顯示為上橫線的字體渲染 Bug
         # 改用製表符 (Box Drawing Light Horizontal U+2500) 讓線條相連
         display_desc = info.desc.replace('—', '─').replace('―', '─')
-        self.desc_text.insert("end", display_desc)
-        
-        self.desc_text.config(state="disabled")
-        
+        self._set_desc(display_desc)
+
         self._save_to_history(info.url, info.title)
 
     def _apply_cover_to_ui(self, photo):
@@ -699,7 +842,7 @@ class Application(tk.Tk):
 
     def _handle_fetch_error(self, error: Exception):
         self.reset_info_labels()
-        self.title_var_display.set("書名：載入失敗")
+        self._set_info_field(self.title_text, "書名：載入失敗")
         self.status_label.config(text=str(error), foreground="red")
         self.cover_label.config(image='', text="[ 圖片載入失敗 ]", width=28, height=14)
 
@@ -843,6 +986,7 @@ class Application(tk.Tk):
                         stripped = line.strip()
                         if stripped:
                             self.last_activity_time = time.time()
+                            self._update_progress_from_line(stripped)
                             # 用 after(0, ...) 確保 UI 更新在主執行緒
                             self.after(0, lambda l=stripped: logging.info(f"[下載器] {l}"))
                     else:
@@ -903,7 +1047,10 @@ class Application(tk.Tk):
                 mins, secs = divmod(rem, 60)
                 time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
                     
-                self.after(0, lambda ts=time_str: self.progress_var.set(f"狀態: 下載中...   (已耗時 {ts})  "))
+                self._pg_elapsed_str = time_str
+                # 有進度後由動畫迴圈更新標籤（與進度條同步），還沒進度時這裡先顯示耗時
+                if not self._pg_active:
+                    self.after(0, lambda t=time_str: self.progress_var.set(f"狀態: 下載中...   (已耗時 {t})  "))
                 time.sleep(1)
                 
                 if elapsed > DOWNLOAD_TIMEOUT_SECONDS:
@@ -923,6 +1070,7 @@ class Application(tk.Tk):
             self.current_process.wait()
             if self.current_process.returncode == 0:
                 logging.info("下載程序執行完畢。")
+                self._pg_complete = True
                 self.after(0, lambda: self.progress_var.set("狀態: 下載完成，進行後續轉換..."))
                 return True
             else:
