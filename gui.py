@@ -26,6 +26,7 @@ from core import (DIR_DOWNLOADS, DIR_TRAD, VALID_URL_PATTERN,
 from scraper import NovelScraper, NovelInfo, classify_error, packer_log_is_network_error
 from epub_tools import S2TW_CONVERTER, process_downloaded_folder, clear_temp_directory
 from packer import find_downloader_exe, write_packer_pid, clear_packer_pid, cleanup_orphaned_packer
+from updater import APP_REPO, PACKER_REPO, get_local_packer_version, check_target
 
 
 _SINGLE_INSTANCE_PORT = 19876
@@ -131,8 +132,14 @@ class Application(tk.Tk):
         self.last_checked_url = ""
         self._pg_reset()
 
+        self._update_results = None       # 更新檢查結果，主程式與核心下載器各一筆
+        self._update_checking = False
+        self._update_menu_added = False
+        self._update_win = None
+
         self.create_widgets()
         self.setup_logging()
+        self._start_update_check()
         
         # 綁定視窗關閉事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -202,11 +209,15 @@ class Application(tk.Tk):
         self._build_bottom_frame()
 
     def _build_menu(self):
-        menubar = tk.Menu(self)
-        help_menu = tk.Menu(menubar, tearoff=0)
+        self.menubar = tk.Menu(self)
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu.add_command(label="開啟下載資料夾", command=self._open_downloads_folder)
+        self.menubar.add_cascade(label="檔案", menu=file_menu)
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        help_menu.add_command(label="檢查更新", command=lambda: self._show_update_window(recheck=True))
         help_menu.add_command(label="關於", command=self._show_about)
-        menubar.add_cascade(label="說明", menu=help_menu)
-        self.config(menu=menubar)
+        self.menubar.add_cascade(label="說明", menu=help_menu)
+        self.config(menu=self.menubar)
 
     def _show_about(self):
         win = tk.Toplevel(self)
@@ -258,6 +269,146 @@ class Application(tk.Tk):
             os.startfile(str(path))
         except Exception:
             webbrowser.open(path.as_uri())
+
+    def _open_downloads_folder(self):
+        folder = get_base_path() / DIR_DOWNLOADS
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(folder))
+        except Exception as e:
+            messagebox.showerror("錯誤", f"無法開啟下載資料夾:\n{e}")
+
+    def _start_update_check(self):
+        """背景查一次更新，已在查則不重複啟動"""
+        if self._update_checking:
+            return
+        self._update_checking = True
+        self._refresh_update_window()
+        threading.Thread(target=self._thread_check_updates, daemon=True).start()
+
+    def _thread_check_updates(self):
+        packer_exe = find_downloader_exe(get_base_path())
+        results = {
+            'app': check_target(APP_REPO, APP_VERSION),
+            'packer': check_target(PACKER_REPO, get_local_packer_version(packer_exe)),
+        }
+        self._update_results = results
+        self._update_checking = False
+        self.after(0, self._apply_update_results)
+
+    def _apply_update_results(self):
+        results = self._update_results or {}
+        if (not self._update_menu_added
+                and any(r.get('status') == 'update' for r in results.values())):
+            self.menubar.add_command(label="有可用更新",
+                                     command=lambda: self._show_update_window(recheck=False))
+            self._update_menu_added = True
+        self._refresh_update_window()
+
+    def _show_update_window(self, recheck=False):
+        if self._update_win is not None and self._update_win.winfo_exists():
+            self._update_win.lift()
+            self._update_win.focus_force()
+        else:
+            self._build_update_window()
+        if recheck or self._update_results is None:
+            self._start_update_check()
+        self._refresh_update_window()
+
+    def _build_update_window(self):
+        win = tk.Toplevel(self)
+        win.title("檢查更新")
+        win.resizable(False, False)
+        win.transient(self)
+        icon_path = get_resource_path('BiliNovelDownloaderIcon.ico')
+        if icon_path.exists():
+            try:
+                win.iconbitmap(str(icon_path))
+            except Exception:
+                pass
+        frm = ttk.Frame(win, padding=20)
+        frm.pack(fill="both", expand=True)
+
+        local_packer = get_local_packer_version(find_downloader_exe(get_base_path()))
+        self._upd_labels = {}
+        rows = (('app', '主程式', APP_VERSION),
+                ('packer', '核心下載器', f"v{local_packer}" if local_packer else "無法判定"))
+        for i, (key, name, current) in enumerate(rows):
+            base = i * 2
+            pad_top = (0, 0) if i == 0 else (10, 0)
+            ttk.Label(frm, text=name, font=("Microsoft JhengHei", 10, "bold")).grid(
+                row=base, column=0, sticky="w", pady=pad_top)
+            ttk.Label(frm, text=current).grid(row=base, column=1, sticky="w", padx=(15, 0), pady=pad_top)
+            ttk.Label(frm, text="最新版本").grid(row=base + 1, column=0, sticky="w")
+            latest = ttk.Label(frm, text="檢查中…", foreground="gray")
+            latest.grid(row=base + 1, column=1, sticky="w", padx=(15, 0))
+            link = ttk.Label(frm, text="前往下載", foreground="#0066CC", cursor="hand2")
+            link.grid(row=base + 1, column=2, sticky="w", padx=(10, 0))
+            link.grid_remove()
+            self._upd_labels[key] = {'latest': latest, 'link': link}
+
+        self._upd_warn = ttk.Label(frm, text="", foreground="#B25900", wraplength=320)
+        self._upd_warn.grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self._upd_warn.grid_remove()
+
+        btnf = ttk.Frame(frm)
+        btnf.grid(row=5, column=0, columnspan=3, sticky="e", pady=(15, 0))
+        self._upd_recheck_btn = ttk.Button(btnf, text="重新檢查",
+                                           command=lambda: self._show_update_window(recheck=True))
+        self._upd_recheck_btn.pack(side="left", padx=(0, 5))
+        ttk.Button(btnf, text="關閉", command=win.destroy).pack(side="left")
+
+        self._update_win = win
+        win.grab_set()
+        win.update_idletasks()
+        w, h = win.winfo_width(), win.winfo_height()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+    def _refresh_update_window(self):
+        """把目前的檢查狀態反映到檢查更新視窗（未開啟時不做事）"""
+        if self._update_win is None or not self._update_win.winfo_exists():
+            return
+        results = self._update_results or {}
+        checking = self._update_checking
+        for key in ('app', 'packer'):
+            widgets = self._upd_labels[key]
+            r = results.get(key)
+            if checking or not r:
+                widgets['latest'].config(text="檢查中…" if checking else "—", foreground="gray")
+                widgets['link'].grid_remove()
+                continue
+            status = r['status']
+            if status == 'update':
+                widgets['latest'].config(text=r['latest'], foreground="#0066CC")
+                widgets['link'].bind("<Button-1>", lambda e, u=r['url']: webbrowser.open(u))
+                widgets['link'].grid()
+            elif status == 'latest':
+                widgets['latest'].config(text=f"{r['latest']}（已是最新）", foreground="green")
+                widgets['link'].grid_remove()
+            elif status == 'no_local':
+                widgets['latest'].config(text=r['latest'] or "—", foreground="black")
+                widgets['link'].grid_remove()
+            else:
+                widgets['latest'].config(text="—", foreground="gray")
+                widgets['link'].grid_remove()
+
+        statuses = [r.get('status') for r in results.values()]
+        if checking:
+            warn = ""
+        elif 'ratelimit' in statuses:
+            warn = "查詢過於頻繁，請稍後再試。"
+        elif 'network' in statuses:
+            warn = "無法取得更新資訊，請檢查網路連線。"
+        else:
+            warn = ""
+        if warn:
+            self._upd_warn.config(text=warn)
+            self._upd_warn.grid()
+        else:
+            self._upd_warn.grid_remove()
+        self._upd_recheck_btn.config(state="disabled" if checking else "normal")
 
     def _build_url_frame(self):
         frame_url = ttk.LabelFrame(self, text="小說來源與資訊預覽")
