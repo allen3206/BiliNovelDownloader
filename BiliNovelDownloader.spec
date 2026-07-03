@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('BiliNovelDownloaderIcon.ico', '.'), ('version.txt', '.')]
+datas = [('icon.ico', '.'), ('version.txt', '.')]
 datas += collect_data_files('opencc')
 
 a = Analysis(
@@ -38,5 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['BiliNovelDownloaderIcon.ico'],
+    icon=['icon.ico'],
 )

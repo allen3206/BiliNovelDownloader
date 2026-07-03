@@ -1,5 +1,5 @@
 <p align="center">
-   <img src="./assets/BiliNovelDownloaderIcon.png" width="256" height="256" />
+   <img src="./assets/icon.png" width="256" height="256" />
 </p>
 
 <h1 align="center">嗶哩輕小說自動下載與繁化工具 (BiliNovelDownloader)</h1>

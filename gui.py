@@ -106,7 +106,7 @@ class Application(tk.Tk):
         self.title(f"嗶哩輕小說自動下載與繁化工具 {APP_VERSION}")
         
         # 嘗試載入視窗圖示
-        icon_path = get_resource_path('BiliNovelDownloaderIcon.ico')
+        icon_path = get_resource_path('icon.ico')
         if icon_path.exists():
             try:
                 self.iconbitmap(str(icon_path))
@@ -224,7 +224,7 @@ class Application(tk.Tk):
         win.title("關於")
         win.resizable(False, False)
         win.transient(self)
-        icon_path = get_resource_path('BiliNovelDownloaderIcon.ico')
+        icon_path = get_resource_path('icon.ico')
         if icon_path.exists():
             try:
                 win.iconbitmap(str(icon_path))
@@ -320,7 +320,7 @@ class Application(tk.Tk):
         win.title("檢查更新")
         win.resizable(False, False)
         win.transient(self)
-        icon_path = get_resource_path('BiliNovelDownloaderIcon.ico')
+        icon_path = get_resource_path('icon.ico')
         if icon_path.exists():
             try:
                 win.iconbitmap(str(icon_path))
