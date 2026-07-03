@@ -14,7 +14,7 @@ downloads/
 temp/
 log/
 *.log
-*.json
+history.json
 
 # Core downloader executable (downloaded by user or provided in Releases)
 tools/*.exe
