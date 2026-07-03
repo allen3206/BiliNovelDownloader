@@ -83,7 +83,7 @@ downloads/
 
 ### 環境準備
 
-1. 建議使用 Python 3.10 或 3.11
+1. 建議使用 Python 3.10 以上
 2. 安裝必要的套件：
    ```bash
    pip install -r requirements.txt
