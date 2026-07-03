@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  PACKER_VERSION: "0.2.44"   # 內附的核心下載器版本；換版改這一行
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 驗證 tag 與 version.txt 一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $v = (Get-Content version.txt -TotalCount 1).Trim()
+          if ($v -ne '${{ github.ref_name }}') {
+            Write-Error "version.txt（$v）與 tag（${{ github.ref_name }}）不一致"
+            exit 1
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 安裝依賴
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.21.0
+
+      - name: 下載核心下載器
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v${{ env.PACKER_VERSION }}" --repo Montaro2017/bili_novel_packer --pattern "*x86_64-windows.exe" --dir tools
+          Get-ChildItem tools
+
+      - name: 建置與打包
+        run: ./packaging/build_release.ps1
+
+      - name: 取得產物名稱
+        id: out
+        run: |
+          $v = (Get-Content version.txt -TotalCount 1).Trim()
+          "zip=BiliNovelDownloader-$v-windows-x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: 上傳測試 artifact（非 tag 觸發）
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build
+          path: ${{ steps.out.outputs.zip }}
+
+      - name: 建立 draft release（tag 觸發）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "${{ steps.out.outputs.zip }}" `
+            --draft --title "${{ github.ref_name }}" `
+            --notes "（draft：發佈前貼上 release-description 的內容）內含核心下載器 bili_novel_packer v${{ env.PACKER_VERSION }}（MIT, Montaro2017）"
