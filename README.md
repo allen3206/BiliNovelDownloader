@@ -12,6 +12,8 @@
 
 <img width="952" height="732" alt="screenshot2" src="./assets/screenshots2.png" />
 
+<img width="952" height="732" alt="screenshot3" src="./assets/screenshots3.png" />
+
 ## 特色與功能
 
 *   **圖形介面**：貼上網址或數字 ID 即可預覽小說資訊（封面、簡介、目錄）
