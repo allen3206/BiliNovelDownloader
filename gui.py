@@ -878,6 +878,7 @@ class Application(tk.Tk):
         
         self.cover_label.config(image='', text="正在載入封面...", width=28, height=14)
         self.cover_label.image = None
+        self._cover_error = None
 
     def check_novel_info(self, event=None, auto_start=False):
         if self.app_state == AppState.CHECKING:
@@ -923,28 +924,28 @@ class Application(tk.Tk):
             self.after(0, lambda: self._apply_info_to_ui(info))
             self.last_checked_url = url
             
-            # 抓取封面
+            # 背景只下載/解碼 PIL 圖片；Tk 圖片由主執行緒建立
+            cover_img = None
+            cover_error = "未提供封面圖片"
             if info.cover_url:
                 try:
-                    cover_img = self.scraper.download_cover(info.cover_url)
-                    if cover_img:
-                        photo = ImageTk.PhotoImage(cover_img)
-                        self.after(0, lambda p=photo: self._apply_cover_to_ui(p))
-                    else:
-                        self.after(0, lambda: self.status_label.config(text="找不到封面圖片", foreground="orange"))
+                    cover_img = self.scraper.download_cover(info.cover_url, referer=url)
+                    cover_error = None if cover_img is not None else "封面載入失敗，請重新載入資訊"
                 except Exception as e:
-                    self.after(0, lambda err=e: self.status_label.config(text=f"封面下載失敗: {err}", foreground="orange"))
+                    logging.warning("封面載入失敗: %s", e)
+                    cover_error = "封面載入失敗，請重新載入資訊"
+            self.after(0, lambda img=cover_img, err=cover_error: self._apply_cover_to_ui(img, err))
 
             # 抓取目錄
             try:
                 vols = self.scraper.fetch_catalog(url)
                 if vols:
                     self.after(0, lambda v=vols: self._apply_catalog_to_ui(v))
-                    self.after(0, lambda: self.status_label.config(text="小說資訊與目錄載入成功", foreground="green"))
+                    self.after(0, lambda: self._set_info_status("小說資訊與目錄載入成功", "green"))
                 else:
-                    self.after(0, lambda: self.status_label.config(text="資訊載入成功 (但找不到目錄)", foreground="orange"))
+                    self.after(0, lambda: self._set_info_status("資訊載入成功 (但找不到目錄)", "orange"))
             except Exception as e:
-                self.after(0, lambda err=e: self.status_label.config(text=f"載入完成 (目錄抓取失敗: {err})", foreground="orange"))
+                self.after(0, lambda err=e: self._set_info_status(f"載入完成 (目錄抓取失敗: {err})", "orange"))
 
             if auto_start:
                 self.after(500, self.start_process)
@@ -971,9 +972,27 @@ class Application(tk.Tk):
 
         self._save_to_history(info.url, info.title)
 
-    def _apply_cover_to_ui(self, photo):
-        self.cover_label.config(image=photo, text="", width=200, height=280)
-        self.cover_label.image = photo
+    def _apply_cover_to_ui(self, image, error=None):
+        self._cover_error = error
+        if image is not None:
+            try:
+                photo = ImageTk.PhotoImage(image, master=self)
+                self.cover_label.config(image=photo, text="", width=200, height=280)
+                self.cover_label.image = photo
+                self._cover_error = None
+                return
+            except Exception as e:
+                logging.warning("封面顯示失敗: %s", e)
+                self._cover_error = "封面顯示失敗，請重新載入資訊"
+        self._cover_error = self._cover_error or "未提供封面圖片"
+        self.cover_label.config(image='', text=self._cover_error, width=28, height=14)
+        self.cover_label.image = None
+
+    def _set_info_status(self, text, foreground):
+        if self._cover_error:
+            text += f"；{self._cover_error}"
+            foreground = "orange"
+        self.status_label.config(text=text, foreground=foreground)
 
     def _apply_catalog_to_ui(self, vols: List[Tuple[str, str]]):
         for item in self.vol_tree_id.get_children(): self.vol_tree_id.delete(item)

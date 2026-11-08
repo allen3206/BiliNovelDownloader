@@ -193,7 +193,7 @@ class NovelScraper:
                 vols.append((str(i), S2TW_CONVERTER.convert(v_name)))
         return vols
 
-    def download_cover(self, cover_url: str) -> Optional['Image.Image']:
+    def download_cover(self, cover_url: str, *, referer: Optional[str] = None) -> Optional['Image.Image']:
         if not cover_url: return None
         import hashlib
         
@@ -207,7 +207,8 @@ class NovelScraper:
         if cache_path.exists():
             if time.time() - cache_path.stat().st_mtime < 86400:
                 try:
-                    img = Image.open(cache_path).copy()
+                    with Image.open(cache_path) as cached:
+                        img = cached.copy()
                     img.thumbnail((200, 280), Image.LANCZOS)
                     return img
                 except Exception:
@@ -217,14 +218,18 @@ class NovelScraper:
                 
         # 快取未命中或已過期：下載並存入快取
         try:
-            res = requests.get(cover_url, headers=self.headers, timeout=15)
+            # 圖片站會檢查來源頁面；不要把 Referer 寫回共用 headers
+            headers = dict(self.headers)
+            if referer:
+                headers['Referer'] = referer
+            res = requests.get(cover_url, headers=headers, timeout=15)
             if res.status_code == 200:
-                img = Image.open(io.BytesIO(res.content))
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+                with Image.open(io.BytesIO(res.content)) as source:
+                    img = source.convert('RGB')
                 img.save(cache_path, 'JPEG', quality=85)
                 img.thumbnail((200, 280), Image.LANCZOS)
                 return img
+            logging.warning("封面下載失敗: HTTP %s (%s)", res.status_code, cover_url)
         except Exception as e:
             logging.warning(f"封面下載失敗: {e}")
         return None
