@@ -560,7 +560,7 @@ class Application(tk.Tk):
         self.vol_specific_var = tk.StringVar()
         self.vol_entry = ttk.Entry(frame_vol, textvariable=self.vol_specific_var, state="disabled", width=15)
         self.vol_entry.grid(row=1, column=1, sticky="w", padx=5)
-        ttk.Label(frame_vol, text="(例: 1,2-9,11，可參考分卷對照表)", foreground="gray", font=("Arial", 9)).grid(row=1, column=2, sticky="w")
+        ttk.Label(frame_vol, text="（例：1,2-9,11，可參考分卷對照表的編號）", foreground="gray", font=("Arial", 9)).grid(row=1, column=2, sticky="w")
         
         # 3. 進階選項
         frame_opt = ttk.LabelFrame(settings_container, text="進階選項")
