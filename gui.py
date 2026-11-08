@@ -7,7 +7,6 @@ import ctypes
 import shutil
 import logging
 import threading
-import subprocess
 import webbrowser
 import tkinter as tk
 import socket as _socket
@@ -25,7 +24,7 @@ from core import (DIR_DOWNLOADS, DIR_TRAD, VALID_URL_PATTERN,
                   get_resource_path, get_base_path, APP_VERSION, sanitize_filename)
 from scraper import NovelScraper, NovelInfo, classify_error, packer_log_is_network_error
 from epub_tools import S2TW_CONVERTER, process_downloaded_folder, clear_temp_directory
-from packer import find_downloader_exe, write_packer_pid, clear_packer_pid, cleanup_orphaned_packer
+from packer import find_downloader_exe, cleanup_orphaned_packer, run_interactive_packer
 from updater import APP_REPO, PACKER_REPO, get_local_packer_version, check_target
 
 
@@ -1115,10 +1114,12 @@ class Application(tk.Tk):
             self.current_process = None
             self.after(0, lambda: self.set_app_state(AppState.IDLE))
 
-    def _tail_log_file(self, log_path: Path):
+    def _tail_log_file(self, log_path: Path, stop_event=None):
         """持續讀取下載器 log 檔並顯示到 UI，直到下載結束或取消"""
         # 等待 log 檔出現（最多 10 秒）
         for _ in range(20):
+            if stop_event is not None and stop_event.is_set():
+                return
             if log_path.exists():
                 break
             time.sleep(0.5)
@@ -1127,8 +1128,10 @@ class Application(tk.Tk):
 
         try:
             with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                f.seek(0, 2)  # 跳到末尾，只看後續新增的內容
+                # 本次新建的 log 從頭讀，避免漏掉快速寫入的初始與完成訊息
                 while not self.cancel_event.is_set():
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     # 如果 process 已結束，再讀一次把剩餘內容清空
                     process_done = (self.current_process is None or
                                     self.current_process.poll() is not None)
@@ -1157,94 +1160,66 @@ class Application(tk.Tk):
 
     def _run_downloader_process(self, exe_path: Path, url: str, o1: str, o2: str, o3: str, cwd: str) -> bool:
         logging.info("正在啟動下載器...")
-        try:
-            kwargs = {}
-            if sys.platform == 'win32':
-                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                
-            self.current_process = subprocess.Popen(
-                str(exe_path),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                cwd=cwd,
-                **kwargs
-            )
-            write_packer_pid(Path(cwd), self.current_process.pid)
+        log_path = Path(cwd) / 'bili_novel.log'
+        tail_stop = threading.Event()
+        tail_thread = None
+        succeeded = False
 
-            self.current_process.stdin.write(f"{url}\n{o1}\n{o2}\n{o3}\n")
-            self.current_process.stdin.flush()
-            self.current_process.stdin.close()
-            
-            log_path = Path(cwd) / 'bili_novel.log'
-            tail_thread = threading.Thread(
-                target=self._tail_log_file,
-                args=(log_path,),
-                daemon=True
-            )
-            self.last_activity_time = time.time()
+        def started(process):
+            nonlocal tail_thread
+            self.current_process = process
+            tail_thread = threading.Thread(target=self._tail_log_file,
+                                           args=(log_path, tail_stop), daemon=True)
             tail_thread.start()
 
-            start_time = time.time()
-            while self.current_process.poll() is None:
-                if self.cancel_event.is_set():
-                    self.current_process.kill()
-                    self.current_process.wait()
-                    return False
-                    
-                elapsed = int(time.time() - start_time)
-                hrs, rem = divmod(elapsed, 3600)
-                mins, secs = divmod(rem, 60)
-                time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
-                    
-                self._pg_elapsed_str = time_str
-                # 有進度後由動畫迴圈更新標籤（與進度條同步），還沒進度時這裡先顯示耗時
-                if not self._pg_active:
-                    self.after(0, lambda t=time_str: self.progress_var.set(f"狀態: 下載中...   (已耗時 {t})  "))
-                time.sleep(1)
-                
-                if elapsed > DOWNLOAD_TIMEOUT_SECONDS:
-                    self.current_process.kill()
-                    self.current_process.wait()
-                    self._abort_reason = "timeout"
-                    logging.error(f"下載超時 ({DOWNLOAD_TIMEOUT_SECONDS // 3600}小時)，已強制終止。")
-                    return False
+        def tick(elapsed):
+            hrs, rem = divmod(int(elapsed), 3600)
+            mins, secs = divmod(rem, 60)
+            text = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs else f"{mins:02d}:{secs:02d}"
+            self._pg_elapsed_str = text
+            if not self._pg_active:
+                self.after(0, lambda t=text: self.progress_var.set(f"狀態: 下載中...   (已耗時 {t})  "))
 
-                if time.time() - self.last_activity_time > STALL_TIMEOUT_SECONDS:
-                    self.current_process.kill()
-                    self.current_process.wait()
-                    self._abort_reason = "stall"
-                    logging.error(f"下載停滯（{STALL_TIMEOUT_SECONDS // 60} 分鐘無回應），已強制終止。")
-                    return False
-            
-            self.current_process.wait()
-            if self.current_process.returncode == 0:
-                logging.info("下載程序執行完畢。")
+        try:
+            result = run_interactive_packer(
+                exe_path, url, o1, o2, o3, cwd, self.cancel_event,
+                on_process=started, on_line=lambda line: logging.info("[核心] %s", line),
+                on_tick=tick, timeout_seconds=DOWNLOAD_TIMEOUT_SECONDS,
+                stall_seconds=STALL_TIMEOUT_SECONDS)
+            succeeded = result.success
+            if succeeded:
+                logging.info("核心工作已完成並結束，已驗證 %s 個 EPUB。", len(result.output_files))
                 self._pg_complete = True
                 self.after(0, lambda: self.progress_var.set("狀態: 下載完成，進行後續轉換..."))
                 return True
-            else:
-                if not self.cancel_event.is_set():
-                    logging.error(f"下載器異常退出，代碼: {self.current_process.returncode}")
-                    self._abort_reason = self._classify_packer_failure(log_path)
-                return False
-                
+            logging.error("核心工作失敗 [%s]: %s", result.reason, result.message)
+            if not self.cancel_event.is_set():
+                self._abort_reason = (result.reason if result.reason in ('stall', 'timeout')
+                                      else self._classify_packer_failure(log_path))
+            return False
         except Exception as e:
             if not self.cancel_event.is_set():
-                logging.error(f"執行下載器錯誤: {e}")
+                logging.exception("執行下載器錯誤: %s", e)
                 self._abort_reason = "error"
             return False
         finally:
-            if self.current_process:
-                try:
-                    if self.current_process.poll() is None:
-                        self.current_process.kill()
-                        self.current_process.wait()
-                except: pass
-                self.current_process = None
-            clear_packer_pid(Path(cwd))
-            time.sleep(1)
+            if tail_thread:
+                tail_thread.join(timeout=1)
+                tail_stop.set()
+                tail_thread.join(timeout=1)
+            self.current_process = None
+            # 成功的核心 log 仍由 _main_logic 封存；失敗與取消也保留診斷
+            try:
+                log_dir = get_base_path() / 'log'
+                log_dir.mkdir(exist_ok=True)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                names = ['packer_console.log'] + ([] if succeeded else ['bili_novel.log'])
+                for name in names:
+                    source = Path(cwd) / name
+                    if source.exists():
+                        shutil.copy2(source, log_dir / f'{timestamp}_{name}')
+            except OSError as e:
+                logging.warning("保存核心診斷失敗: %s", e)
 
     def _main_logic(self, url, o1, o2, o3):
         base_path = get_base_path()

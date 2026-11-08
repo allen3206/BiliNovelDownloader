@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  PACKER_VERSION: "0.2.44"   # 內附的核心下載器版本；換版改這一行
+  PACKER_VERSION: "0.2.50"   # 內附的核心下載器版本；換版改這一行
 
 permissions:
   contents: write
