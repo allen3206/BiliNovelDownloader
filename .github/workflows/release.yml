@@ -28,12 +28,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.13.17'
 
       - name: 安裝依賴
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller==6.21.0
+          python -m pip install pip==26.3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --require-hashes -r packaging/requirements-release.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
 
       - name: 下載核心下載器
         env:

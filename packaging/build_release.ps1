@@ -3,7 +3,7 @@
 )
 # 打包發行版：建置 exe、組裝 release 資料夾、壓 zip、核對必備檔案。
 # 用法見 RELEASING.md。前置需求：tools\ 內恰有一顆 bili_novel_packer exe、
-# 環境裝齊 requirements.txt 與 pyinstaller。
+# 發布環境依 packaging/requirements-release.txt 安裝，並核對授權清單
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
